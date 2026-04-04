@@ -2,6 +2,7 @@ import os
 import subprocess
 import uuid
 import requests
+import json
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 
@@ -12,7 +13,6 @@ TEMP_DIR = "/tmp/video_renders"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 def download_file(url, dest_dir, prefix):
-    """Скачивает файл по URL и возвращает локальный путь."""
     if not url:
         return None
     local_filename = os.path.join(dest_dir, f"{prefix}_{uuid.uuid4()}.tmp")
@@ -25,19 +25,33 @@ def download_file(url, dest_dir, prefix):
 
 @app.route('/render', methods=['POST'])
 def render_video():
-    data = request.get_json()
-    if not data:
+    # Логируем заголовки и тело
+    print("=== New request ===")
+    print(f"Headers: {dict(request.headers)}")
+    print(f"Content-Type: {request.content_type}")
+    try:
+        data = request.get_json()
+        print(f"JSON data: {data}")
+    except Exception as e:
+        print(f"Failed to parse JSON: {e}")
         return jsonify({"error": "Invalid JSON"}), 400
 
+    if not data:
+        return jsonify({"error": "No JSON data"}), 400
+
     video_url = data.get('video_url')
-    voice_url = data.get('voice_url')   # озвучка (основной звук)
-    music_url = data.get('music_url')   # фоновая музыка
+    voice_url = data.get('voice_url')
+    music_url = data.get('music_url')
+
+    print(f"video_url: {video_url}")
+    print(f"voice_url: {voice_url}")
+    print(f"music_url: {music_url}")
 
     if not video_url:
+        print("ERROR: video_url is missing")
         return jsonify({"error": "video_url is required"}), 400
 
     try:
-        # 1. Скачиваем все файлы
         video_path = download_file(video_url, TEMP_DIR, "video")
         voice_path = download_file(voice_url, TEMP_DIR, "voice") if voice_url else None
         music_path = download_file(music_url, TEMP_DIR, "music") if music_url else None
@@ -45,51 +59,38 @@ def render_video():
         output_filename = f"{uuid.uuid4()}.mp4"
         output_path = os.path.join(TEMP_DIR, output_filename)
 
-        # 2. Строим команду FFmpeg
-        # Базовый фильтр: копируем видео
         command = ['ffmpeg', '-i', video_path]
-
-        # Добавляем аудио входы
         if voice_path:
             command += ['-i', voice_path]
         if music_path:
             command += ['-i', music_path]
 
-        # Параметры кодирования
-        command += ['-c:v', 'copy']  # видео копируем без изменений
+        command += ['-c:v', 'copy']
 
         if voice_path and music_path:
-            # Два аудио: голос + музыка (музыку делаем тише)
-            # amix: смешивает два потока, duration=longest (длина по самому длинному)
-            # volume=0.3 для музыки (30% громкости)
             command += [
                 '-filter_complex',
                 '[1:a]volume=1.0[voice];[2:a]volume=0.3[music];[voice][music]amix=inputs=2:duration=longest[aout]',
-                '-map', '0:v:0',      # видео
-                '-map', '[aout]',     # смешанное аудио
-                '-c:a', 'aac',
-                '-shortest'
+                '-map', '0:v:0', '-map', '[aout]', '-c:a', 'aac', '-shortest'
             ]
         elif voice_path:
-            # Только голос
             command += ['-map', '0:v:0', '-map', '1:a:0', '-c:a', 'aac', '-shortest']
         elif music_path:
-            # Только музыка
             command += ['-map', '0:v:0', '-map', '1:a:0', '-c:a', 'aac', '-shortest']
         else:
-            # Нет аудио
             command += ['-an', '-shortest']
 
         command += ['-y', output_path]
-
-        # Выполняем
+        print(f"Running command: {' '.join(command)}")
         subprocess.run(command, check=True, capture_output=True, text=True)
-
+        print(f"Render successful, sending file {output_path}")
         return send_file(output_path, as_attachment=True, download_name='rendered_video.mp4')
 
     except subprocess.CalledProcessError as e:
+        print(f"FFmpeg error: {e.stderr}")
         return jsonify({"error": f"FFmpeg failed: {e.stderr}"}), 500
     except Exception as e:
+        print(f"General error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
