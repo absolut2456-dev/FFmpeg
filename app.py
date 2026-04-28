@@ -12,15 +12,40 @@ CORS(app)
 TEMP_DIR = "/tmp/video_renders"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-def download_file(url, dest_dir, prefix):
-    if not url:
-        return None
-    local_filename = os.path.join(dest_dir, f"{prefix}_{uuid.uuid4()}.tmp")
-    with requests.get(url, stream=True) as r:
-        r.raise_for_status()
-        with open(local_filename, 'wb') as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
+import re
+
+def download_file(url, dest_path):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+
+    # Если это Google Диск – преобразуем ссылку
+    if 'drive.google.com' in url:
+        file_id = None
+        # Пробуем вытащить id из параметра ?id=...
+        match = re.search(r'[?&]id=([a-zA-Z0-9_-]+)', url)
+        if match:
+            file_id = match.group(1)
+        else:
+            # Или из пути вида /d/<id>/...
+            parts = url.split('/')
+            if 'd' in parts:
+                idx = parts.index('d') + 1
+                if idx < len(parts):
+                    file_id = parts[idx]
+
+        if file_id:
+            url = f'https://drive.google.com/uc?export=download&id={file_id}&confirm=1'
+        else:
+            raise Exception(f'Не удалось извлечь file_id из ссылки: {url}')
+
+    # Загружаем с правильными заголовками и разрешаем редиректы
+    r = requests.get(url, stream=True, headers=headers, allow_redirects=True)
+    r.raise_for_status()
+
+    with open(dest_path, 'wb') as f:
+        for chunk in r.iter_content(chunk_size=8192):
+            f.write(chunk)
     return local_filename
 
 @app.route('/render', methods=['POST'])
